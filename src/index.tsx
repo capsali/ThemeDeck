@@ -6144,30 +6144,21 @@ const Content = () => {
               onChange={(value) => setClipLoopEnabled(value)}
             />
           </PanelSectionRow>
-          <PanelSectionRow>
-            <div
-              style={{
-                width: "100%",
-                opacity: clipLoopEnabled ? 1 : 0.45,
-                transition: "opacity 0.15s ease",
-              }}
-            >
-              <SliderField
-                value={clipLoopLength}
-                label="Default loop length"
-                description={
-                  clipLoopEnabled
-                    ? formatClipLength(clipLoopLength)
-                    : "Disabled \u2014 full songs play"
-                }
-                min={CLIP_LOOP_GENERAL_MIN}
-                max={CLIP_LOOP_GENERAL_MAX}
-                step={5}
-                disabled={!clipLoopEnabled}
-                onChange={(value) => setClipLoopLength(value)}
-              />
-            </div>
-          </PanelSectionRow>
+          {clipLoopEnabled ? (
+            <PanelSectionRow>
+              <div style={{ width: "100%", paddingLeft: "0.9rem", boxSizing: "border-box" }}>
+                <SliderField
+                  value={clipLoopLength}
+                  label="Default loop length"
+                  description={formatClipLength(clipLoopLength)}
+                  min={CLIP_LOOP_GENERAL_MIN}
+                  max={CLIP_LOOP_GENERAL_MAX}
+                  step={5}
+                  onChange={(value) => setClipLoopLength(value)}
+                />
+              </div>
+            </PanelSectionRow>
+          ) : null}
           <PanelSectionRow>
             <div style={{ width: "100%" }}>
               <div style={{ fontWeight: 600 }}>
