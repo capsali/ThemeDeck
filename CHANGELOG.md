@@ -5,6 +5,9 @@
 - YouTube results are scored (main/menu theme, 1–12 minute length, view count) and trailers, gameplay, covers, remixes and hour-long loops are ranked down. Bulk auto-assign picks the best-scoring result and falls back to the previous search if nothing scores well.
 - Manual searches on the music page are sorted by the same score (nothing is hidden), the search box is pre-filled with "<game> main theme", and games without music search automatically when the page opens (online only).
 - The music page shows the current track's YouTube thumbnail and title, or a music icon for local files.
+- Bulk auto-assign can now include non-Steam shortcuts (read from `userdata/*/config/shortcuts.vdf`), behind an "Include non-Steam shortcuts" toggle (on by default).
+- Adds a "Skip launcher and app shortcuts" toggle (on by default) so shortcuts like Battle.net, EA App or Ubisoft Connect are not given game music.
+- Cleans shortcut names before searching YouTube (drops tags like "(USA)" or "[GOG]" and trademark symbols).
 
 ## 3.0.2 - 2026-09-06
 - Stops and releases browser audio and visualizer resources before system sleep.
