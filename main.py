@@ -439,6 +439,43 @@ def is_launcher_shortcut_name(name: str) -> bool:
     return bool(NON_STEAM_LAUNCHER_PATTERN.search(normalized))
 
 
+# --- YouTube errors ---------------------------------------------------------------
+# Errors YouTube usually recovers from within seconds or minutes; retried a few times.
+YOUTUBE_RETRY_DELAYS_SECONDS = (3, 10)
+YOUTUBE_RETRYABLE_PATTERNS = (
+    "http error 403",
+    "http error 429",
+    "http error 5",
+    "not a bot",
+    "timed out",
+    "connection reset",
+    "connection refused",
+    "temporary failure in name resolution",
+    "incompleteread",
+    "unable to download webpage",
+    "unable to download video data",
+)
+# YouTube is limiting this PC; automatic downloads should pause instead of retrying.
+YOUTUBE_RATE_LIMIT_PATTERNS = ("http error 429", "not a bot", "too many requests")
+
+
+def is_retryable_youtube_error(message: str) -> bool:
+    text = str(message or "").lower()
+    return any(pattern in text for pattern in YOUTUBE_RETRYABLE_PATTERNS)
+
+
+def describe_youtube_error(message: str) -> str:
+    """Prefix yt-dlp errors with a short explanation the UI can show."""
+    text = str(message or "").lower()
+    if any(pattern in text for pattern in YOUTUBE_RATE_LIMIT_PATTERNS):
+        return f"YouTube is limiting downloads (rate limited): {message}"
+    if "ffmpeg" in text or "ffprobe" in text:
+        return f"ffmpeg is missing (install it with: sudo pacman -S ffmpeg): {message}"
+    if "video unavailable" in text or "private video" in text:
+        return f"This video can't be downloaded: {message}"
+    return message
+
+
 def clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
     return max(minimum, min(maximum, value))
 
@@ -1292,10 +1329,14 @@ class Plugin:
                     "--dump-json",
                     f"ytsearch{safe_limit}:{search_query}",
                 ]
-                result = await self._run_command(command, timeout=90, env=yt_dlp["env"])
+                result = await self._run_with_retries(
+                    command, timeout=90, env=yt_dlp["env"], label=f"search {search_query!r}"
+                )
                 last_stdout = result.stdout or ""
                 if result.returncode != 0:
-                    raise RuntimeError(self._command_error(result, "YouTube search failed"))
+                    raise RuntimeError(
+                        describe_youtube_error(self._command_error(result, "YouTube search failed"))
+                    )
 
                 results = self._parse_youtube_search_json_lines(last_stdout)
                 if results:
@@ -1625,6 +1666,9 @@ class Plugin:
         """
         if app_id <= 0:
             raise ValueError("Invalid app id")
+        if source == "auto" and str(app_id) in self._tracks:
+            # Picked by hand (or reattached) while this automatic download was queued.
+            return {"skipped": "has_track", "tracks": self._tracks}
 
         yt_dlp = self._require_yt_dlp_invocation()
         normalized_url = self._normalize_youtube_url(video_url)
@@ -1656,10 +1700,12 @@ class Plugin:
             "after_move:filepath",
             normalized_url,
         ]
-        result = await self._run_command(command, timeout=900, env=yt_dlp["env"])
+        result = await self._run_with_retries(
+            command, timeout=900, env=yt_dlp["env"], label=f"download app={app_id}"
+        )
         if result.returncode != 0:
             raise RuntimeError(
-                self._command_error(result, "YouTube download failed")
+                describe_youtube_error(self._command_error(result, "YouTube download failed"))
             )
 
         output_lines = [
@@ -1670,6 +1716,14 @@ class Plugin:
             downloaded_path = self._find_latest_audio_file(app_download_dir)
         if not downloaded_path:
             raise RuntimeError("Download completed but no audio file was found")
+
+        if source == "auto" and str(app_id) in self._tracks:
+            # Music was assigned while downloading: keep it, just record the file.
+            self._record_download(
+                downloaded_path, app_id=app_id, youtube_id=video_id, source="auto"
+            )
+            self._log_info(f"youtube download kept existing track app={app_id}")
+            return {"skipped": "has_track", "tracks": self._tracks}
 
         tracks = await self.set_track(app_id, str(downloaded_path), downloaded_path.name)
         self._tracks[str(app_id)]["youtube_id"] = video_id
@@ -2328,6 +2382,22 @@ class Plugin:
                 self._log_error(f"stdout: {self._trim_message(result.stdout, 1200)}")
         else:
             self._log_info(f"Command completed rc=0: {command_text}")
+        return result
+
+    async def _run_with_retries(
+        self, command: list[str], *, timeout: int, env: dict[str, str], label: str
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a yt-dlp command, retrying errors YouTube usually recovers from."""
+        result = await self._run_command(command, timeout=timeout, env=env)
+        for delay in YOUTUBE_RETRY_DELAYS_SECONDS:
+            if result.returncode == 0:
+                break
+            message = self._command_error(result, "")
+            if not is_retryable_youtube_error(message):
+                break
+            self._log_warning(f"{label} failed ({message}); retrying in {delay}s")
+            await asyncio.sleep(delay)
+            result = await self._run_command(command, timeout=timeout, env=env)
         return result
 
     def _command_error(

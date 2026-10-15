@@ -126,8 +126,10 @@ type YouTubeSearchResponse = {
 
 type YouTubeDownloadResponse = {
   tracks: RawTrackMap;
-  path: string;
-  filename: string;
+  path?: string;
+  filename?: string;
+  // Set when an automatic download found music already assigned and kept it.
+  skipped?: "has_track";
 };
 
 type SteamLibraryGamesResponse = {
@@ -625,7 +627,23 @@ let stopPlaybackToken = 0;
 const USE_BACKEND_PLAYBACK = false;
 
 function toErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  // Some errors (e.g. from Decky calls or media elements) have an empty message;
+  // fall back to their name or contents so the debug log isn't blank.
+  if (error instanceof Error) {
+    if (error.message) return error.message;
+    return error.name && error.name !== "Error" ? error.name : String(error.stack || error);
+  }
+  if (error && typeof error === "object") {
+    const candidate = error as Record<string, unknown>;
+    const nested = candidate.message ?? candidate.error ?? candidate.name;
+    if (typeof nested === "string" && nested) return nested;
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return Object.prototype.toString.call(error);
+    }
+  }
+  return String(error);
 }
 
 function logClient(
@@ -1803,11 +1821,19 @@ let autoDownloadWorkerRunning = false;
 let autoDownloadInterval: number | null = null;
 let autoDownloadFirstCheck: number | null = null;
 
+// When YouTube rate-limits this PC, automatic downloads pause instead of retrying.
+const AUTO_DOWNLOAD_RATE_LIMIT_PAUSE_MS = 30 * 60 * 1000;
+let autoDownloadPausedUntil = 0;
+
+const isRateLimitError = (message: string): boolean =>
+  /rate limited|not a bot|http error 429|too many requests/i.test(message);
+
 const canAutoDownloadNow = (): boolean =>
   readAutoDownloadNewGamesSetting() &&
   runningGameAppId === null &&
   !desktopModeActive &&
-  navigator.onLine !== false;
+  navigator.onLine !== false &&
+  Date.now() >= autoDownloadPausedUntil;
 
 let autoDownloadEventCheck: number | null = null;
 // Games excluded on their ThemeDeck page; they're skipped by every automatic download
@@ -1910,8 +1936,18 @@ const runAutoDownloadQueue = async () => {
         for (const candidate of candidates) {
           if (!canAutoDownloadNow()) break;
           try {
-            await downloadYouTubeAudio(item.appId, candidate.webpage_url, "auto");
+            const response = await downloadYouTubeAudio(
+              item.appId,
+              candidate.webpage_url,
+              "auto"
+            );
             assigned = true;
+            if (response?.skipped) {
+              // Music was picked (or reattached) while this was queued: keep it.
+              logClient("info", "auto_download_kept_existing", { appId: item.appId });
+              window.dispatchEvent(new Event(TRACKS_UPDATED_EVENT));
+              break;
+            }
             logClient("info", "auto_download_assigned", {
               appId: item.appId,
               name: item.name,
@@ -1922,11 +1958,26 @@ const runAutoDownloadQueue = async () => {
             toaster.toast({ title: "ThemeDeck", body: `Music added for ${item.name}` });
             break;
           } catch (error) {
+            const message = toErrorMessage(error);
             logClient("warning", "auto_download_failed", {
               appId: item.appId,
               title: candidate.title,
-              error: toErrorMessage(error),
+              error: message,
             });
+            if (isRateLimitError(message)) {
+              // Put the game back in front, and stop for a while.
+              autoDownloadPausedUntil = Date.now() + AUTO_DOWNLOAD_RATE_LIMIT_PAUSE_MS;
+              autoDownloadAttempted.delete(item.appId);
+              autoDownloadQueue.unshift(item);
+              toaster.toast({
+                title: "ThemeDeck",
+                body: "YouTube is limiting downloads. Automatic downloads will try again in 30 minutes.",
+              });
+              logClient("warning", "auto_download_paused", {
+                until: new Date(autoDownloadPausedUntil).toISOString(),
+              });
+              return;
+            }
           }
         }
         if (!assigned) {
@@ -6646,6 +6697,20 @@ const Content = () => {
 
         try {
           const response = await downloadYouTubeAudio(game.appid, result.webpage_url, "auto");
+          if (response?.skipped) {
+            // Music was assigned to this game while the bulk download ran: keep it.
+            completed += 1;
+            skipped += 1;
+            assignedCurrentGame = true;
+            setBulkAssign((prev) => ({
+              ...prev,
+              completed,
+              skipped,
+              currentGame: gameName,
+              message: `Skipped ${gameName} (music was assigned meanwhile).`,
+            }));
+            break;
+          }
           const normalized = normalizeTracks(response?.tracks);
           latestTracks = normalized;
           setTracks(normalized);
