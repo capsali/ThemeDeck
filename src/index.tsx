@@ -397,6 +397,10 @@ const getAutoDownloadExcluded = callable<[], number[]>("get_auto_download_exclud
 const setAutoDownloadExcluded = callable<[appId: number, excluded: boolean], number[]>(
   "set_auto_download_excluded"
 );
+const reattachKeptTrack = callable<
+  [appId: number],
+  { path: string | null; source?: "auto" | "manual"; reason?: string; tracks?: RawTrackMap }
+>("reattach_kept_track");
 const checkNewGames = callable<
   [],
   { first_run: boolean; games: { appid: number; name: string }[] }
@@ -1890,12 +1894,23 @@ const runAutoDownloadQueue = async () => {
       try {
         const current = normalizeTracks(await fetchTracks());
         if (current[item.appId]) continue;
+        const kept = await reattachKeptTrack(item.appId);
+        if (kept?.path) {
+          logClient("info", "auto_download_reused_kept", {
+            appId: item.appId,
+            name: item.name,
+            source: kept.source,
+          });
+          window.dispatchEvent(new Event(TRACKS_UPDATED_EVENT));
+          toaster.toast({ title: "ThemeDeck", body: `Music restored for ${item.name}` });
+          continue;
+        }
         const candidates = (await findAutoDownloadCandidates(item.appId, item.name)).slice(0, 3);
         let assigned = false;
         for (const candidate of candidates) {
           if (!canAutoDownloadNow()) break;
           try {
-            await downloadYouTubeAudio(item.appId, candidate.webpage_url);
+            await downloadYouTubeAudio(item.appId, candidate.webpage_url, "auto");
             assigned = true;
             logClient("info", "auto_download_assigned", {
               appId: item.appId,
@@ -6483,6 +6498,30 @@ const Content = () => {
         continue;
       }
 
+      // Reuse a kept download (hand-picked first) before searching YouTube again.
+      try {
+        const kept = await reattachKeptTrack(game.appid);
+        if (kept?.path) {
+          const normalized = normalizeTracks(kept.tracks);
+          latestTracks = normalized;
+          setTracks(normalized);
+          latestTracksForAutoPlay = normalized;
+          window.dispatchEvent(new Event(TRACKS_UPDATED_EVENT));
+          assigned += 1;
+          completed += 1;
+          setBulkAssign((prev) => ({
+            ...prev,
+            completed,
+            assigned,
+            currentGame: gameName,
+            message: `Reused the kept track for ${gameName}.`,
+          }));
+          continue;
+        }
+      } catch (error) {
+        console.error("[ThemeDeck] reattaching kept track failed", error);
+      }
+
       const candidateResults: YouTubeSearchResult[] = [];
       const seenVideoIds = new Set<string>();
       let hadSearchError = false;
@@ -8165,15 +8204,11 @@ const ChangeTheme = () => {
       await deleteTrack(appId);
       window.dispatchEvent(new Event(TRACKS_UPDATED_EVENT));
       setTrack(null);
-      // Removing music on purpose shouldn't be undone by the automatic download.
-      const excludeNow = readAutoDownloadNewGamesSetting() && autoDownloadAllowed;
-      if (excludeNow) {
-        await handleAutoDownloadAllowedChange(false);
-      }
+      const willRepick = readAutoDownloadNewGamesSetting() && autoDownloadAllowed;
       toaster.toast({
         title: "ThemeDeck",
-        body: excludeNow
-          ? `Cleared music for ${getDisplayName(appId)} (automatic download turned off for this game)`
+        body: willRepick
+          ? `Cleared music for ${getDisplayName(appId)}. Music may be added again next time; turn off automatic download for this game to keep it silent.`
           : `Cleared music for ${getDisplayName(appId)}`,
       });
     } catch (error) {

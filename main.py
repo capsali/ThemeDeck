@@ -1390,6 +1390,68 @@ class Plugin:
             )
         return {"first_run": first_run, "games": new_games}
 
+    # --- Reusing kept downloads -------------------------------------------
+
+    @staticmethod
+    def _youtube_id_from_name(name: str) -> str | None:
+        match = re.search(r"\[([A-Za-z0-9_-]{11})\]\.[A-Za-z0-9]+$", name or "")
+        return match.group(1) if match else None
+
+    def _resolved_str(self, path: str | Path) -> str:
+        try:
+            return str(Path(path).expanduser().resolve())
+        except Exception:
+            return str(path)
+
+    def _find_kept_file(self, app_id: int) -> dict[str, Any] | None:
+        """Best kept download for a game: hand-picked first, then the newest."""
+        index = self._read_downloads_index()
+        candidates: list[tuple[int, int, Path, str | None, str]] = []
+        seen: set[str] = set()
+        for key, entry in index.items():
+            if not isinstance(entry, dict) or int(entry.get("app_id") or 0) != int(app_id):
+                continue
+            path = self._downloads_dir / key
+            if not path.is_file():
+                continue
+            seen.add(self._resolved_str(path))
+            youtube_id = entry.get("youtube_id")
+            source = "manual" if entry.get("source") == "manual" else "auto"
+            candidates.append(
+                (1 if source == "manual" else 0, int(entry.get("downloaded_at") or 0), path, youtube_id, source)
+            )
+        # Files downloaded before the index existed: auto-picked, dated by mtime.
+        legacy_dir = self._downloads_dir / str(app_id)
+        if legacy_dir.is_dir():
+            for path in legacy_dir.iterdir():
+                resolved = self._resolved_str(path)
+                if not path.is_file() or resolved in seen:
+                    continue
+                if path.suffix.lower().lstrip(".") not in SUPPORTED_AUDIO_EXTENSIONS:
+                    continue
+                youtube_id = self._youtube_id_from_name(path.name)
+                candidates.append((0, int(path.stat().st_mtime), path, youtube_id, "auto"))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        _, _, path, youtube_id, source = candidates[0]
+        return {"path": path, "youtube_id": youtube_id, "source": source}
+
+    async def reattach_kept_track(self, app_id: int) -> dict[str, Any]:
+        """Assign a kept download to a game without music, instead of searching again."""
+        if str(app_id) in self._tracks:
+            return {"path": None, "reason": "has_track"}
+        kept = self._find_kept_file(app_id)
+        if not kept:
+            return {"path": None, "reason": "none_kept"}
+        path: Path = kept["path"]
+        tracks = await self.set_track(app_id, str(path), path.name)
+        if kept["youtube_id"]:
+            self._tracks[str(app_id)]["youtube_id"] = kept["youtube_id"]
+            self._save_tracks()
+        self._log_info(f"reattached kept track app={app_id} file={path} source={kept['source']}")
+        return {"path": str(path), "source": kept["source"], "tracks": tracks}
+
     async def get_auto_download_excluded(self) -> list[int]:
         return sorted(self._read_auto_download_excluded())
 
