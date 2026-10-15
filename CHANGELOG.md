@@ -10,6 +10,13 @@
 - Cleans shortcut names before searching YouTube (drops tags like "(USA)" or "[GOG]" and trademark symbols).
 - "Download music for new games" (off by default): when Steam reports a library change (checked ~15 s later) or every 30 minutes, newly installed games — including owned games installed later, reinstalls and new non-Steam shortcuts — get a track in the background via the smart search. Opening an installed game's page without music also queues it. Downloads never run while a game is running, in Desktop Mode or offline. Enabling it first records the current library, so it doesn't download for every game.
 - Per-game "Download music automatically for this game" switch on the music page; excluded games are skipped by automatic downloads but still included in the manual bulk download. Removing a game's music while automatic downloads are on also excludes it, so the music isn't downloaded again.
+- Now playing on the game page can be shown as a play bar button left of the controller icon (Steam's own button style, reachable with the D-pad) instead of the floating card. Press it to pause or resume the game's music; it stays paused until resumed or the page is left. Falls back to the card if the button can't be placed.
+- Play bar button display: "Always expanded" (artwork, title and play state) or "Expand on press" (thumbnail with a play/pause mark; first press expands, the next pauses or resumes).
+- Settings: choices use bulleted rows that work with the D-pad, sub-options only show under the selected choice, and the general section's buttons use Steam's own button rows.
+- "Manage music" section: shows how many games have music and how much space downloads use (auto-picked vs hand-picked, and unused).
+- "Remove music from all games…" with a confirmation and a choice of what to delete: auto-picked downloads (default), all ThemeDeck downloads, or nothing. Global/store tracks and the user's own music files are never touched.
+- "Delete unused auto-picked downloads" and "Delete all unused downloads" free space without changing any game's music.
+- Downloads are recorded in `downloads/index.json` with their game, video and whether they were picked by hand or by bulk/automatic download (older files count as auto-picked).
 
 ## 3.0.2 - 2026-09-06
 - Stops and releases browser audio and visualizer resources before system sleep.

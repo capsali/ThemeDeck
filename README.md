@@ -36,6 +36,7 @@ ThemeDeck lets you add and manage custom music across your Steam library and key
 - Remove or change a game's assigned track at any time.
 - Auto-play music when opening game pages.
 - Displays a live "Now Playing" card overlay on game pages.
+- Or shows it as a play bar button next to the controller icon: press to pause or resume the game's music.
 - Includes a real, beat-reactive audio visualizer in the "Now Playing" card.
 - Assign a global/ambient track for non-game areas.
 - Assign a separate store-only track for Steam Store pages.
@@ -46,6 +47,7 @@ ThemeDeck lets you add and manage custom music across your Steam library and key
 - Bulk auto-assign music to games that don’t have tracks yet.
 - Optionally include non-Steam shortcuts in bulk auto-assign, skipping launcher/app shortcuts like Battle.net or EA App.
 - Optionally download music automatically for newly installed games and non-Steam shortcuts (and installed games whose page you open without music); any game can be excluded on its music page.
+- Manage downloaded music: see disk usage, remove music from all games (deleting auto-picked, all, or no downloads), and delete unused downloads. Only files ThemeDeck downloaded are ever deleted.
 - See live bulk progress and stop the process anytime.
 - View a list of games still missing music.
 - See live name-loading progress while that missing-games list is built.
