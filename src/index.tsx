@@ -383,6 +383,14 @@ const getThemeSearchName = callable<
   [appId: number, gameName: string],
   { name: string; source: string }
 >("get_theme_search_name");
+const getAutoDownloadExcluded = callable<[], number[]>("get_auto_download_excluded");
+const setAutoDownloadExcluded = callable<[appId: number, excluded: boolean], number[]>(
+  "set_auto_download_excluded"
+);
+const checkNewGames = callable<
+  [],
+  { first_run: boolean; games: { appid: number; name: string }[] }
+>("check_new_games");
 const findThemeCandidates = callable<
   [appId: number, gameName: string],
   { query_name: string; source: string; candidates: YouTubeSearchResult[] }
@@ -450,6 +458,12 @@ const SKIP_LAUNCHER_SHORTCUTS_EVENT = "themedeck:bulk-skip-launcher-shortcuts-ch
 // Non-Steam shortcut app IDs always have the high bit set; Steam app IDs never do.
 const NON_STEAM_APP_ID_MIN = 0x80000000;
 const isNonSteamAppId = (appId: number): boolean => appId >= NON_STEAM_APP_ID_MIN;
+const AUTO_DOWNLOAD_NEW_GAMES_STORAGE_KEY = "themedeck:autoDownloadNewGames";
+const AUTO_DOWNLOAD_NEW_GAMES_EVENT = "themedeck:auto-download-new-games-changed";
+// Steam library events trigger a check right away (debounced); polling is a fallback.
+const AUTO_DOWNLOAD_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+const AUTO_DOWNLOAD_EVENT_DEBOUNCE_MS = 15 * 1000;
+const AUTO_DOWNLOAD_FIRST_CHECK_MS = 30 * 1000;
 const GLOBAL_AMBIENT_APP_ID = -1;
 const STORE_TRACK_APP_ID = -2;
 const UI_MODE_GAMEPAD = 4;
@@ -628,6 +642,16 @@ const persistSkipLauncherShortcutsSetting = (value: boolean) =>
   persistPreference(
     SKIP_LAUNCHER_SHORTCUTS_STORAGE_KEY,
     SKIP_LAUNCHER_SHORTCUTS_EVENT,
+    value
+  );
+
+const readAutoDownloadNewGamesSetting = (): boolean =>
+  readPreference(AUTO_DOWNLOAD_NEW_GAMES_STORAGE_KEY, false);
+
+const persistAutoDownloadNewGamesSetting = (value: boolean) =>
+  persistPreference(
+    AUTO_DOWNLOAD_NEW_GAMES_STORAGE_KEY,
+    AUTO_DOWNLOAD_NEW_GAMES_EVENT,
     value
   );
 
@@ -1639,6 +1663,195 @@ const notifyFocus = (appId: number | null) => {
   scheduleAutoPlaybackFromContext();
 };
 
+// --- Download music for new games ----------------------------------------------
+// Every few minutes the backend compares installed games with the ones it has seen
+// before; new ones (and game pages opened without music) get a track in the
+// background using the smart theme search. Never while a game is running, in
+// Desktop Mode or offline.
+type AutoDownloadSource = "new_game" | "game_page";
+type AutoDownloadItem = { appId: number; name: string; source: AutoDownloadSource };
+const autoDownloadQueue: AutoDownloadItem[] = [];
+// Games already tried this session, so a failed search isn't retried on every visit.
+const autoDownloadAttempted = new Set<number>();
+let autoDownloadWorkerRunning = false;
+let autoDownloadInterval: number | null = null;
+let autoDownloadFirstCheck: number | null = null;
+
+const canAutoDownloadNow = (): boolean =>
+  readAutoDownloadNewGamesSetting() &&
+  runningGameAppId === null &&
+  !desktopModeActive &&
+  navigator.onLine !== false;
+
+let autoDownloadEventCheck: number | null = null;
+// Games excluded on their ThemeDeck page; they're skipped by every automatic download
+// but still included in the manual bulk download.
+let autoDownloadExcludedAppIds = new Set<number>();
+
+const refreshAutoDownloadExcluded = async () => {
+  try {
+    const ids = await getAutoDownloadExcluded();
+    autoDownloadExcludedAppIds = new Set((ids || []).map((id) => Number(id)));
+  } catch (error) {
+    logClient("warning", "auto_download_excluded_load_failed", {
+      error: toErrorMessage(error),
+    });
+  }
+};
+
+// Non-Steam shortcuts always point at something on disk; Steam games must be installed.
+const isAppInstalledForAutoDownload = (appId: number): boolean => {
+  if (isNonSteamAppId(appId)) return true;
+  try {
+    const appStore = (window as any)?.appStore;
+    const overview =
+      appStore?.GetAppOverviewByAppID?.(appId) || appStore?.GetAppOverviewByGameID?.(appId);
+    return isInstalledAppOverview(overview);
+  } catch (_ignored) {
+    return false;
+  }
+};
+
+const scheduleNewGameCheck = () => {
+  if (!readAutoDownloadNewGamesSetting() || autoDownloadEventCheck !== null) return;
+  autoDownloadEventCheck = window.setTimeout(() => {
+    autoDownloadEventCheck = null;
+    void checkForNewGames();
+  }, AUTO_DOWNLOAD_EVENT_DEBOUNCE_MS);
+};
+
+const queueAutoDownload = (appId: number, name: string, source: AutoDownloadSource) => {
+  if (!readAutoDownloadNewGamesSetting() || appId <= 0) return;
+  if (autoDownloadExcludedAppIds.has(appId)) return;
+  if (latestTracksForAutoPlay[appId] || autoDownloadAttempted.has(appId)) return;
+  if (autoDownloadQueue.some((item) => item.appId === appId)) return;
+  const cleanName = String(name || "").trim();
+  if (!cleanName || /^App\s+\d+$/i.test(cleanName)) return;
+  autoDownloadQueue.push({ appId, name: cleanName, source });
+  void runAutoDownloadQueue();
+};
+
+const findAutoDownloadCandidates = async (
+  appId: number,
+  name: string
+): Promise<YouTubeSearchResult[]> => {
+  try {
+    const smart = await findThemeCandidates(appId, name);
+    if (smart?.candidates?.length) {
+      return smart.candidates;
+    }
+  } catch (error) {
+    logClient("warning", "auto_download_smart_search_failed", {
+      appId,
+      error: toErrorMessage(error),
+    });
+  }
+  // Same fallback as bulk auto-assign: the plain search, first usable results.
+  const response = await searchYouTube(`${name} soundtrack`, 5);
+  return (response?.results || []).filter(
+    (result) => !result.duration || result.duration <= 15 * 60
+  );
+};
+
+const runAutoDownloadQueue = async () => {
+  if (autoDownloadWorkerRunning) return;
+  autoDownloadWorkerRunning = true;
+  try {
+    while (autoDownloadQueue.length) {
+      if (!canAutoDownloadNow()) {
+        // Picked up again by the next periodic check or game page visit.
+        break;
+      }
+      const item = autoDownloadQueue.shift()!;
+      if (autoDownloadExcludedAppIds.has(item.appId)) continue;
+      autoDownloadAttempted.add(item.appId);
+      try {
+        const current = normalizeTracks(await fetchTracks());
+        if (current[item.appId]) continue;
+        const candidates = (await findAutoDownloadCandidates(item.appId, item.name)).slice(0, 3);
+        let assigned = false;
+        for (const candidate of candidates) {
+          if (!canAutoDownloadNow()) break;
+          try {
+            await downloadYouTubeAudio(item.appId, candidate.webpage_url);
+            assigned = true;
+            logClient("info", "auto_download_assigned", {
+              appId: item.appId,
+              name: item.name,
+              source: item.source,
+              title: candidate.title,
+            });
+            window.dispatchEvent(new Event(TRACKS_UPDATED_EVENT));
+            toaster.toast({ title: "ThemeDeck", body: `Music added for ${item.name}` });
+            break;
+          } catch (error) {
+            logClient("warning", "auto_download_failed", {
+              appId: item.appId,
+              title: candidate.title,
+              error: toErrorMessage(error),
+            });
+          }
+        }
+        if (!assigned) {
+          logClient("info", "auto_download_no_match", {
+            appId: item.appId,
+            name: item.name,
+            candidates: candidates.length,
+          });
+        }
+      } catch (error) {
+        logClient("warning", "auto_download_error", {
+          appId: item.appId,
+          error: toErrorMessage(error),
+        });
+      }
+    }
+  } finally {
+    autoDownloadWorkerRunning = false;
+  }
+};
+
+const checkForNewGames = async () => {
+  if (!canAutoDownloadNow()) return;
+  try {
+    const result = await checkNewGames();
+    for (const game of result?.games || []) {
+      queueAutoDownload(game.appid, game.name, "new_game");
+    }
+  } catch (error) {
+    logClient("warning", "auto_download_check_failed", { error: toErrorMessage(error) });
+  }
+  void runAutoDownloadQueue();
+};
+
+const startAutoDownloadWatcher = () => {
+  stopAutoDownloadWatcher();
+  void refreshAutoDownloadExcluded();
+  autoDownloadFirstCheck = window.setTimeout(() => {
+    autoDownloadFirstCheck = null;
+    void checkForNewGames();
+  }, AUTO_DOWNLOAD_FIRST_CHECK_MS);
+  autoDownloadInterval = window.setInterval(() => {
+    void checkForNewGames();
+  }, AUTO_DOWNLOAD_CHECK_INTERVAL_MS);
+};
+
+const stopAutoDownloadWatcher = () => {
+  if (autoDownloadFirstCheck !== null) {
+    window.clearTimeout(autoDownloadFirstCheck);
+    autoDownloadFirstCheck = null;
+  }
+  if (autoDownloadInterval !== null) {
+    window.clearInterval(autoDownloadInterval);
+    autoDownloadInterval = null;
+  }
+  if (autoDownloadEventCheck !== null) {
+    window.clearTimeout(autoDownloadEventCheck);
+    autoDownloadEventCheck = null;
+  }
+  autoDownloadQueue.length = 0;
+};
+
 const setContextMenuActiveAppId = (appId: number | null) => {
   const normalized = appId && appId > 0 ? appId : null;
   if (contextMenuActiveAppId === normalized) {
@@ -1985,6 +2198,8 @@ const startSteamAppWatchers = () => {
         if (candidate) {
           notifyFocus(candidate);
         }
+        // Tier 1 of "Download music for new games": Steam reported a library change.
+        scheduleNewGameCheck();
       });
       const cleaner = wrapUnsubscribe(unsub);
       if (cleaner) {
@@ -2953,6 +3168,11 @@ const GameFocusBridge = () => {
     activeDetailBridgeCount += 1;
     activeDetailRouteAppId = appId;
     notifyFocus(appId);
+    if (appId && appId > 0 && isAppInstalledForAutoDownload(appId)) {
+      // Tier 3 of "Download music for new games": an installed game's page opened
+      // without music.
+      queueAutoDownload(appId, getDisplayName(appId), "game_page");
+    }
     return () => {
       activeDetailBridgeCount = Math.max(0, activeDetailBridgeCount - 1);
       // Route transitions can briefly unmount/remount detail pages; delay clear
@@ -4483,6 +4703,25 @@ const useSkipLauncherShortcutsSetting = (): [boolean, (value: boolean) => void] 
     SKIP_LAUNCHER_SHORTCUTS_EVENT
   );
 
+const useAutoDownloadNewGamesSetting = (): [boolean, (value: boolean) => void] => {
+  const [value, update] = useBooleanPreference(
+    readAutoDownloadNewGamesSetting,
+    persistAutoDownloadNewGamesSetting,
+    AUTO_DOWNLOAD_NEW_GAMES_EVENT
+  );
+  const updateAndCheck = useCallback(
+    (next: boolean) => {
+      update(next);
+      if (next) {
+        // The first check only records the current library; later ones find new games.
+        void checkForNewGames();
+      }
+    },
+    [update]
+  );
+  return [value, updateAndCheck];
+};
+
 const useAmbientDisableStoreSetting = (): [boolean, (value: boolean) => void] =>
   useBooleanPreference(
     readAmbientDisableStoreSetting,
@@ -4697,6 +4936,8 @@ const Content = () => {
     useGlobalAmbientEnabledSetting();
   const [storeTrackEnabled, setStoreTrackEnabled] = useStoreTrackEnabledSetting();
   const [masterVolume, setMasterVolume] = useMasterVolumeSetting();
+  const [autoDownloadNewGames, setAutoDownloadNewGames] =
+    useAutoDownloadNewGamesSetting();
   const [ambientDisableStore, setAmbientDisableStore] =
     useAmbientDisableStoreSetting();
   const [ambientInterruptionMode, setAmbientInterruptionMode] =
@@ -6298,6 +6539,14 @@ const Content = () => {
           </PanelSectionRow>
         )}
         <PanelSectionRow>
+          <ToggleField
+            checked={autoDownloadNewGames}
+            label="Download music for new games"
+            description="In the background, find music for newly installed games and for game pages you open without music. Never while a game is running."
+            onChange={(value) => setAutoDownloadNewGames(value)}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
           <div style={{ width: "100%" }}>
             <div style={{ opacity: 0.8, fontSize: "0.85rem" }}>
               Picks the best-matching main theme on YouTube for each game (falling back to the first result) and only targets games with no assigned track.
@@ -6808,6 +7057,13 @@ const ChangeTheme = () => {
   const previewObjectUrlRef = useRef<string | null>(null);
   const playback = usePlaybackStateValue();
   const navigateBack = useCallback(() => Navigation.NavigateBack(), []);
+  const [generalAutoDownload] = useAutoDownloadNewGamesSetting();
+  const [autoDownloadAllowed, setAutoDownloadAllowed] = useState(
+    () => !autoDownloadExcludedAppIds.has(appId)
+  );
+  useEffect(() => {
+    setAutoDownloadAllowed(!autoDownloadExcludedAppIds.has(appId));
+  }, [appId]);
 
   const loadTrack = useCallback(async () => {
     if (!appId) return;
@@ -7151,15 +7407,35 @@ const ChangeTheme = () => {
     saveFromPath(joinPath(currentDir, file));
   };
 
+  const handleAutoDownloadAllowedChange = async (allowed: boolean) => {
+    if (!appId) return;
+    setAutoDownloadAllowed(allowed);
+    try {
+      const ids = await setAutoDownloadExcluded(appId, !allowed);
+      autoDownloadExcludedAppIds = new Set((ids || []).map((id) => Number(id)));
+    } catch (error) {
+      console.error("[ThemeDeck] auto-download exclusion update failed", error);
+      setAutoDownloadAllowed(!allowed);
+      toaster.toast({ title: "ThemeDeck", body: "Couldn't save automatic download setting" });
+    }
+  };
+
   const handleRemove = async () => {
     if (!appId) return;
     try {
       await deleteTrack(appId);
       window.dispatchEvent(new Event(TRACKS_UPDATED_EVENT));
       setTrack(null);
+      // Removing music on purpose shouldn't be undone by the automatic download.
+      const excludeNow = readAutoDownloadNewGamesSetting() && autoDownloadAllowed;
+      if (excludeNow) {
+        await handleAutoDownloadAllowedChange(false);
+      }
       toaster.toast({
         title: "ThemeDeck",
-        body: `Cleared music for ${getDisplayName(appId)}`,
+        body: excludeNow
+          ? `Cleared music for ${getDisplayName(appId)} (automatic download turned off for this game)`
+          : `Cleared music for ${getDisplayName(appId)}`,
       });
     } catch (error) {
       console.error("[ThemeDeck] route remove failed", error);
@@ -7472,6 +7748,20 @@ const ChangeTheme = () => {
                 </ControllerButton>
               </div>
             </div>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ToggleField
+              checked={autoDownloadAllowed}
+              label="Download music automatically for this game"
+              description={
+                generalAutoDownload
+                  ? autoDownloadAllowed
+                    ? "Follows \u201cDownload music for new games\u201d (on)."
+                    : "Excluded from automatic downloads. The manual bulk download still includes it."
+                  : "\u201cDownload music for new games\u201d is off in the main settings."
+              }
+              onChange={(value) => void handleAutoDownloadAllowedChange(value)}
+            />
           </PanelSectionRow>
           {track ? (
             <PanelSectionRow>
@@ -8562,6 +8852,7 @@ export default definePlugin(() => {
   startLocationWatcher();
   startSteamAppWatchers();
   startAutoPlaybackCoordinator();
+  startAutoDownloadWatcher();
   const gamePatches = GAME_DETAIL_ROUTES.map((path) =>
     injectBridgeIntoRoute(path)
   );
@@ -8599,6 +8890,7 @@ export default definePlugin(() => {
       stopLocationWatcher();
       stopSteamAppWatchers();
       stopAutoPlaybackCoordinator();
+      stopAutoDownloadWatcher();
       stopPlayback(false, "onDismount");
       clearAudioCache();
       contextMenuUnpatch?.();

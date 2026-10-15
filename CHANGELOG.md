@@ -8,6 +8,8 @@
 - Bulk auto-assign can now include non-Steam shortcuts (read from `userdata/*/config/shortcuts.vdf`), behind an "Include non-Steam shortcuts" toggle (on by default).
 - Adds a "Skip launcher and app shortcuts" toggle (on by default) so shortcuts like Battle.net, EA App or Ubisoft Connect are not given game music.
 - Cleans shortcut names before searching YouTube (drops tags like "(USA)" or "[GOG]" and trademark symbols).
+- "Download music for new games" (off by default): when Steam reports a library change (checked ~15 s later) or every 30 minutes, newly installed games — including owned games installed later, reinstalls and new non-Steam shortcuts — get a track in the background via the smart search. Opening an installed game's page without music also queues it. Downloads never run while a game is running, in Desktop Mode or offline. Enabling it first records the current library, so it doesn't download for every game.
+- Per-game "Download music automatically for this game" switch on the music page; excluded games are skipped by automatic downloads but still included in the manual bulk download. Removing a game's music while automatic downloads are on also excludes it, so the music isn't downloaded again.
 
 ## 3.0.2 - 2026-09-06
 - Stops and releases browser audio and visualizer resources before system sleep.

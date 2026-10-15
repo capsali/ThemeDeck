@@ -35,6 +35,20 @@ YTDLP_RELEASE_URLS = (
 # YouTube searches worse. For Steam games we look up the game's own name on Wikidata
 # by Steam app ID (property P1733), which needs no API key. If Wikidata has no entry
 # we keep the full Steam name and never trim words from it.
+# Steam tools/runtimes that show up as installed apps but aren't games.
+LIBRARY_TOOL_APP_IDS = {7, 760, 12210, 12211, 12212, 12213, 12218, 228980}
+LIBRARY_TOOL_NAME_PATTERN = re.compile(
+    r"^(proton\b|steam linux runtime|steamworks|steamvr|steam audio|"
+    r"steam controller configs|app \d+$)",
+    re.IGNORECASE,
+)
+
+
+def is_library_tool(app_id: int, name: str) -> bool:
+    """True for Proton, runtimes and other installed apps that aren't games."""
+    return app_id in LIBRARY_TOOL_APP_IDS or bool(
+        LIBRARY_TOOL_NAME_PATTERN.match(str(name or "").strip())
+    )
 WIKIDATA_SPARQL_URL = "https://query.wikidata.org/sparql"
 WIKIDATA_USER_AGENT = "ThemeDeck (+https://github.com/BrenticusMaximus/ThemeDeck)"
 WIKIDATA_BATCH_SIZE = 50
@@ -1100,6 +1114,100 @@ class Plugin:
             self._log_error(f"search_youtube failed query={query!r}: {error}")
             self._log_error(traceback.format_exc())
             raise
+
+    async def check_new_games(self) -> dict[str, Any]:
+        """Games (and non-Steam shortcuts) installed since the last check.
+
+        Includes owned games that were just installed and games reinstalled later.
+
+        The first call only records the current library (so enabling the feature
+        doesn't download music for every game) and returns nothing.
+        """
+        return await asyncio.to_thread(self._check_new_games)
+
+    def _check_new_games(self) -> dict[str, Any]:
+        games, installed_ids = self._read_steam_library_games()
+        names = {int(game["appid"]): str(game["name"]) for game in games}
+        steam = {
+            app_id: names.get(app_id, f"App {app_id}")
+            for app_id in installed_ids
+            if not is_library_tool(app_id, names.get(app_id, ""))
+        }
+        non_steam = {
+            int(shortcut["appid"]): str(shortcut["name"])
+            for shortcut in self._read_non_steam_shortcuts()
+            if not shortcut["launcher"]
+        }
+
+        # {"steam": [...], "non_steam": [...]}; a missing group (first run, or a file
+        # from before non-Steam support) is only recorded, never reported as new.
+        known_file = self._settings_dir / "known-games.json"
+        known: dict[str, set[int] | None] = {"steam": None, "non_steam": None}
+        try:
+            raw = json.loads(known_file.read_text(encoding="utf-8"))
+            if isinstance(raw, list):  # first version: Steam games only
+                known["steam"] = {int(value) for value in raw}
+            elif isinstance(raw, dict):
+                for group in known:
+                    if isinstance(raw.get(group), list):
+                        known[group] = {int(value) for value in raw[group]}
+        except FileNotFoundError:
+            pass
+        except Exception as error:
+            self._log_warning(f"failed reading {known_file}, starting fresh: {error}")
+
+        current = {"steam": steam, "non_steam": non_steam}
+        new_games: list[dict[str, Any]] = []
+        for group, games_by_id in current.items():
+            seen = known[group]
+            if seen is None:
+                self._log_info(f"new-game check: recorded {len(games_by_id)} {group} games")
+                continue
+            new_games.extend(
+                {"appid": app_id, "name": name}
+                for app_id, name in sorted(games_by_id.items())
+                if app_id not in seen
+            )
+
+        first_run = all(value is None for value in known.values())
+        # Store exactly what's installed now, so an uninstalled game that is installed
+        # again later counts as newly installed.
+        snapshot = {group: sorted(current[group]) for group in current}
+        if any(set(snapshot[group]) != (known[group] or set()) or known[group] is None for group in current):
+            try:
+                known_file.write_text(json.dumps(snapshot), encoding="utf-8")
+            except Exception as error:
+                self._log_warning(f"failed writing {known_file}: {error}")
+        if new_games:
+            self._log_info(
+                "new-game check found: "
+                + ", ".join(f"{game['appid']}:{game['name']!r}" for game in new_games)
+            )
+        return {"first_run": first_run, "games": new_games}
+
+    async def get_auto_download_excluded(self) -> list[int]:
+        return sorted(self._read_auto_download_excluded())
+
+    async def set_auto_download_excluded(self, app_id: int, excluded: bool) -> list[int]:
+        """Exclude a game from automatic downloads (manual bulk download still works)."""
+        ids = self._read_auto_download_excluded()
+        if excluded:
+            ids.add(int(app_id))
+        else:
+            ids.discard(int(app_id))
+        path = self._settings_dir / "auto-download-excluded.json"
+        path.write_text(json.dumps(sorted(ids)), encoding="utf-8")
+        return sorted(ids)
+
+    def _read_auto_download_excluded(self) -> set[int]:
+        path = self._settings_dir / "auto-download-excluded.json"
+        try:
+            return {int(value) for value in json.loads(path.read_text(encoding="utf-8"))}
+        except FileNotFoundError:
+            return set()
+        except Exception as error:
+            self._log_warning(f"failed reading {path}: {error}")
+            return set()
 
     async def get_theme_search_name(self, app_id: int, game_name: str) -> dict[str, Any]:
         """Name to pre-fill the manual YouTube search with."""
