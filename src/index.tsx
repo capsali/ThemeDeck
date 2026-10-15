@@ -30,6 +30,8 @@ import {
   playSectionClasses,
   Field,
   ButtonItem,
+  ConfirmModal,
+  showModal,
 } from "@decky/ui";
 import {
   callable,
@@ -374,8 +376,10 @@ const searchYouTube = callable<
   [query: string, limit?: number],
   YouTubeSearchResponse
 >("search_youtube");
+// source: "manual" (picked on the game's music page, the default) or "auto"
+// (bulk/automatic download); used to tell downloads apart when cleaning up.
 const downloadYouTubeAudio = callable<
-  [appId: number, videoUrl: string],
+  [appId: number, videoUrl: string, source?: "manual" | "auto"],
   YouTubeDownloadResponse
 >("download_youtube_audio");
 const getYouTubePreviewStream = callable<
@@ -398,6 +402,43 @@ const logClientEvent = callable<
 const getSteamLibraryGames = callable<[], SteamLibraryGamesResponse>(
   "get_steam_library_games"
 );
+type MusicStorage = {
+  game_tracks: number;
+  downloaded_files: number;
+  downloaded_bytes: number;
+  downloaded_auto_bytes: number;
+  downloaded_manual_bytes: number;
+  unused_files: number;
+  unused_bytes: number;
+  unused_auto_files: number;
+  unused_auto_bytes: number;
+  unused_manual_files: number;
+  unused_manual_bytes: number;
+  preview_bytes: number;
+};
+// What "Remove music from all games" deletes besides the assignments.
+type RemoveDeleteMode = "none" | "auto" | "all";
+const getMusicStorage = callable<[], MusicStorage>("get_music_storage");
+const removeAllGameTracks = callable<
+  [deleteMode: RemoveDeleteMode],
+  { result: { removed: number; deleted_files: number; freed_bytes: number }; tracks: RawTrackMap }
+>("remove_all_game_tracks");
+const deleteUnusedDownloads = callable<
+  [mode: "auto" | "all"],
+  { deleted_files: number; freed_bytes: number }
+>("delete_unused_downloads");
+
+// 1536 -> "1.5 KB"
+const formatBytes = (bytes: number): string => {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = Math.max(0, bytes || 0);
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+};
 
 const TRACKS_UPDATED_EVENT = "themedeck:tracks-updated";
 const AUDIO_EXTENSIONS = ["mp3", "aac", "flac", "ogg", "wav", "m4a"];
@@ -5308,6 +5349,89 @@ const Content = () => {
     useGlobalAmbientEnabledSetting();
   const [storeTrackEnabled, setStoreTrackEnabled] = useStoreTrackEnabledSetting();
   const [masterVolume, setMasterVolume] = useMasterVolumeSetting();
+  const [musicStorage, setMusicStorage] = useState<MusicStorage | null>(null);
+  const [removeDeleteMode, setRemoveDeleteMode] = useState<RemoveDeleteMode>("auto");
+  const [manageMusicBusy, setManageMusicBusy] = useState(false);
+  const refreshMusicStorage = useCallback(async () => {
+    try {
+      setMusicStorage(await getMusicStorage());
+    } catch (error) {
+      console.error("[ThemeDeck] reading music storage failed", error);
+    }
+  }, []);
+  useEffect(() => {
+    void refreshMusicStorage();
+    window.addEventListener(TRACKS_UPDATED_EVENT, refreshMusicStorage);
+    return () => window.removeEventListener(TRACKS_UPDATED_EVENT, refreshMusicStorage);
+  }, [refreshMusicStorage]);
+
+  const removeAllMusic = async (deleteMode: RemoveDeleteMode) => {
+    setManageMusicBusy(true);
+    try {
+      if (playbackState.appId && playbackState.appId > 0) {
+        stopPlayback(true, "removeAllGameTracks");
+      }
+      const response = await removeAllGameTracks(deleteMode);
+      const normalized = normalizeTracks(response?.tracks);
+      setTracks(normalized);
+      latestTracksForAutoPlay = normalized;
+      window.dispatchEvent(new Event(TRACKS_UPDATED_EVENT));
+      const result = response?.result;
+      toaster.toast({
+        title: "ThemeDeck",
+        body:
+          `Removed music from ${result?.removed ?? 0} games` +
+          (deleteMode !== "none" ? `, freed ${formatBytes(result?.freed_bytes ?? 0)}` : ""),
+      });
+    } catch (error) {
+      console.error("[ThemeDeck] remove all music failed", error);
+      toaster.toast({ title: "ThemeDeck", body: "Couldn't remove music from all games" });
+    } finally {
+      setManageMusicBusy(false);
+      void refreshMusicStorage();
+    }
+  };
+
+  const confirmRemoveAllMusic = () => {
+    const count = musicStorage?.game_tracks ?? 0;
+    const deleteMode = removeDeleteMode;
+    const deleteText =
+      deleteMode === "all"
+        ? ` and deletes all ${formatBytes(musicStorage?.downloaded_bytes ?? 0)} ThemeDeck downloaded, including hand-picked tracks.`
+        : deleteMode === "auto"
+          ? ` and deletes ${formatBytes(musicStorage?.downloaded_auto_bytes ?? 0)} of auto-picked downloads. Hand-picked tracks stay on disk.`
+          : ". All downloaded files stay on disk.";
+    showModal(
+      <ConfirmModal
+        strTitle="Remove music from all games?"
+        strDescription={
+          `This removes the music from ${count} game${count === 1 ? "" : "s"}` +
+          deleteText +
+          " Your own music files and the global and store tracks are kept. This can't be undone."
+        }
+        strOKButtonText="Remove"
+        bDestructiveWarning
+        onOK={() => void removeAllMusic(deleteMode)}
+      />
+    );
+  };
+
+  const handleDeleteUnusedDownloads = async (mode: "auto" | "all") => {
+    setManageMusicBusy(true);
+    try {
+      const result = await deleteUnusedDownloads(mode);
+      toaster.toast({
+        title: "ThemeDeck",
+        body: `Deleted ${result?.deleted_files ?? 0} unused files, freed ${formatBytes(result?.freed_bytes ?? 0)}`,
+      });
+    } catch (error) {
+      console.error("[ThemeDeck] delete unused downloads failed", error);
+      toaster.toast({ title: "ThemeDeck", body: "Couldn't delete unused downloads" });
+    } finally {
+      setManageMusicBusy(false);
+      void refreshMusicStorage();
+    }
+  };
   const [ambientDisableStore, setAmbientDisableStore] =
     useAmbientDisableStoreSetting();
   const [ambientInterruptionMode, setAmbientInterruptionMode] =
@@ -6096,7 +6220,7 @@ const Content = () => {
         }));
 
         try {
-          const response = await downloadYouTubeAudio(game.appid, result.webpage_url);
+          const response = await downloadYouTubeAudio(game.appid, result.webpage_url, "auto");
           const normalized = normalizeTracks(response?.tracks);
           latestTracks = normalized;
           setTracks(normalized);
@@ -7088,6 +7212,99 @@ const Content = () => {
             </Focusable>
           </PanelSectionRow>
         )}
+      </PanelSection>
+      <PanelSection title="Manage music">
+        <PanelSectionRow>
+          <div style={{ width: "100%", fontSize: "0.85rem", opacity: 0.85, lineHeight: 1.4 }}>
+            {musicStorage ? (
+              <>
+                <div>
+                  {musicStorage.game_tracks} game{musicStorage.game_tracks === 1 ? "" : "s"} with music
+                </div>
+                <div>
+                  Downloaded music: {formatBytes(musicStorage.downloaded_bytes)} (
+                  {formatBytes(musicStorage.downloaded_auto_bytes)} auto-picked,{" "}
+                  {formatBytes(musicStorage.downloaded_manual_bytes)} hand-picked)
+                </div>
+                {musicStorage.unused_files > 0 ? (
+                  <div>Not used by any game: {formatBytes(musicStorage.unused_bytes)}</div>
+                ) : null}
+              </>
+            ) : (
+              <div>Reading storage...</div>
+            )}
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ width: "100%" }}>
+            <div style={{ fontWeight: 600 }}>When removing music from all games, delete:</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", marginTop: "0.35rem" }}>
+              {(
+                [
+                  { value: "auto", label: "Auto-picked downloads (recommended)" },
+                  { value: "all", label: "All ThemeDeck downloads" },
+                  { value: "none", label: "Nothing (keep all files)" },
+                ] as Array<{ value: RemoveDeleteMode; label: string }>
+              ).map((option) => (
+                <button
+                  key={option.value}
+                  className="DialogButton themedeck-fit themedeck-wrap"
+                  role="radio"
+                  aria-checked={removeDeleteMode === option.value}
+                  onClick={() => setRemoveDeleteMode(option.value)}
+                  style={{
+                    textAlign: "left",
+                    fontSize: "0.9rem",
+                    border:
+                      removeDeleteMode === option.value
+                        ? "1px solid rgba(98, 168, 255, 0.9)"
+                        : "1px solid rgba(255, 255, 255, 0.12)",
+                  }}
+                >
+                  {removeDeleteMode === option.value ? "(x) " : "( ) "}
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: "0.78rem", opacity: 0.7, marginTop: "0.3rem" }}>
+              Only files ThemeDeck downloaded are ever deleted, never your own music files.
+            </div>
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <button
+            className="DialogButton themedeck-fit themedeck-wrap"
+            disabled={manageMusicBusy || !musicStorage?.game_tracks}
+            onClick={confirmRemoveAllMusic}
+            style={{ width: "100%" }}
+          >
+            Remove music from all games…
+          </button>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <button
+            className="DialogButton themedeck-fit themedeck-wrap"
+            disabled={manageMusicBusy || !musicStorage?.unused_auto_files}
+            onClick={() => void handleDeleteUnusedDownloads("auto")}
+            style={{ width: "100%" }}
+          >
+            Delete unused auto-picked downloads
+            {musicStorage?.unused_auto_files ? ` (${formatBytes(musicStorage.unused_auto_bytes)})` : ""}
+          </button>
+        </PanelSectionRow>
+        {musicStorage?.unused_manual_files ? (
+          <PanelSectionRow>
+            <button
+              className="DialogButton themedeck-fit themedeck-wrap"
+              disabled={manageMusicBusy}
+              onClick={() => void handleDeleteUnusedDownloads("all")}
+              style={{ width: "100%" }}
+            >
+              Delete all unused downloads, including hand-picked (
+              {formatBytes(musicStorage.unused_bytes)})
+            </button>
+          </PanelSectionRow>
+        ) : null}
       </PanelSection>
       <PanelSection title="ThemeDeck master volume">
         <PanelSectionRow>

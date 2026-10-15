@@ -43,6 +43,7 @@ ThemeDeck lets you add and manage custom music across your Steam library and key
 - Prevent all plugin music from playing in Desktop Mode.
 - Prevent all plugin music from playing while a game is launched/running.
 - Bulk auto-assign music to games that don’t have tracks yet.
+- Manage downloaded music: see disk usage, remove music from all games (deleting auto-picked, all, or no downloads), and delete unused downloads. Only files ThemeDeck downloaded are ever deleted.
 - See live bulk progress and stop the process anytime.
 - View a list of games still missing music.
 - See live name-loading progress while that missing-games list is built.
