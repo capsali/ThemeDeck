@@ -7236,73 +7236,47 @@ const Content = () => {
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
-          <div style={{ width: "100%" }}>
-            <div style={{ fontWeight: 600 }}>When removing music from all games, delete:</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", marginTop: "0.35rem" }}>
-              {(
-                [
-                  { value: "auto", label: "Auto-picked downloads (recommended)" },
-                  { value: "all", label: "All ThemeDeck downloads" },
-                  { value: "none", label: "Nothing (keep all files)" },
-                ] as Array<{ value: RemoveDeleteMode; label: string }>
-              ).map((option) => (
-                <button
-                  key={option.value}
-                  className="DialogButton themedeck-fit themedeck-wrap"
-                  role="radio"
-                  aria-checked={removeDeleteMode === option.value}
-                  onClick={() => setRemoveDeleteMode(option.value)}
-                  style={{
-                    textAlign: "left",
-                    fontSize: "0.9rem",
-                    border:
-                      removeDeleteMode === option.value
-                        ? "1px solid rgba(98, 168, 255, 0.9)"
-                        : "1px solid rgba(255, 255, 255, 0.12)",
-                  }}
-                >
-                  {removeDeleteMode === option.value ? "(x) " : "( ) "}
-                  {option.label}
-                </button>
-              ))}
-            </div>
-            <div style={{ fontSize: "0.78rem", opacity: 0.7, marginTop: "0.3rem" }}>
-              Only files ThemeDeck downloaded are ever deleted, never your own music files.
-            </div>
-          </div>
+          <ChoiceGroup
+            label="When removing music from all games, delete"
+            description="Only files ThemeDeck downloaded are ever deleted, never your own music files."
+            options={[
+              { value: "auto", label: "Auto-picked downloads", hint: "Recommended" },
+              { value: "all", label: "All ThemeDeck downloads" },
+              { value: "none", label: "Nothing", hint: "Keep all files" },
+            ]}
+            value={removeDeleteMode}
+            onChange={(value) => setRemoveDeleteMode(value as RemoveDeleteMode)}
+          />
         </PanelSectionRow>
         <PanelSectionRow>
-          <button
-            className="DialogButton themedeck-fit themedeck-wrap"
+          <ButtonItem
+            layout="below"
             disabled={manageMusicBusy || !musicStorage?.game_tracks}
             onClick={confirmRemoveAllMusic}
-            style={{ width: "100%" }}
           >
             Remove music from all games…
-          </button>
+          </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
-          <button
-            className="DialogButton themedeck-fit themedeck-wrap"
+          <ButtonItem
+            layout="below"
             disabled={manageMusicBusy || !musicStorage?.unused_auto_files}
             onClick={() => void handleDeleteUnusedDownloads("auto")}
-            style={{ width: "100%" }}
           >
             Delete unused auto-picked downloads
             {musicStorage?.unused_auto_files ? ` (${formatBytes(musicStorage.unused_auto_bytes)})` : ""}
-          </button>
+          </ButtonItem>
         </PanelSectionRow>
         {musicStorage?.unused_manual_files ? (
           <PanelSectionRow>
-            <button
-              className="DialogButton themedeck-fit themedeck-wrap"
+            <ButtonItem
+              layout="below"
+              description="Includes hand-picked downloads."
               disabled={manageMusicBusy}
               onClick={() => void handleDeleteUnusedDownloads("all")}
-              style={{ width: "100%" }}
             >
-              Delete all unused downloads, including hand-picked (
-              {formatBytes(musicStorage.unused_bytes)})
-            </button>
+              Delete all unused downloads ({formatBytes(musicStorage.unused_bytes)})
+            </ButtonItem>
           </PanelSectionRow>
         ) : null}
       </PanelSection>
