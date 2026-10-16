@@ -6687,14 +6687,7 @@ const Content = () => {
             <div style={{ opacity: 0.75, fontSize: "0.8rem", marginTop: "0.15rem" }}>
               Total library games detected: {libraryGames.length}
             </div>
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "0.35rem",
-                marginTop: "0.5rem",
-              }}
-            >
+            <div style={{ marginTop: "0.5rem" }}>
               {(
                 [
                   { value: "all", label: "Download music for all games" },
@@ -6708,43 +6701,28 @@ const Content = () => {
                   },
                 ] as Array<{ value: BulkAssignMode; label: string }>
               ).map((option) => (
-                <button
+                <ButtonItem
                   key={option.value}
-                  className="DialogButton themedeck-fit themedeck-wrap"
+                  layout="below"
+                  bottomSeparator="none"
+                  disabled={bulkAssign.running}
                   onClick={() => {
                     void handleBulkAssign(option.value);
                   }}
-                  style={{
-                    textAlign: "left",
-                    fontSize: "0.92rem",
-                    paddingRight: "0.8rem",
-                    paddingLeft: "0.8rem",
-                    minHeight: "2.8rem",
-                    display: "block",
-                    border:
-                      bulkAssignMode === option.value
-                        ? "1px solid rgba(98, 168, 255, 0.9)"
-                        : "1px solid rgba(255, 255, 255, 0.12)",
-                  }}
                 >
                   {option.label}
-                </button>
+                </ButtonItem>
               ))}
-            </div>
-            <div style={{ marginTop: "0.5rem" }}>
-              <button
-                className="DialogButton themedeck-fit themedeck-wrap"
-                onClick={handleStopBulkAssign}
-                disabled={!bulkAssign.running}
-                style={{
-                  fontSize: "0.92rem",
-                  paddingRight: "0.65rem",
-                  paddingLeft: "0.65rem",
-                  width: "100%",
-                }}
-              >
-                STOP
-              </button>
+              {bulkAssign.running ? (
+                <ButtonItem
+                  layout="below"
+                  bottomSeparator="none"
+                  disabled={bulkAssign.stopRequested}
+                  onClick={handleStopBulkAssign}
+                >
+                  {bulkAssign.stopRequested ? "Stopping…" : "Stop"}
+                </ButtonItem>
+              ) : null}
             </div>
             {(bulkAssign.running || bulkAssign.message) && (
               <div style={{ marginTop: "0.55rem" }}>
@@ -6805,18 +6783,9 @@ const Content = () => {
               gap: "0.45rem",
             }}
           >
-            <button
-              className="DialogButton themedeck-fit themedeck-wrap"
-              onClick={() => setShowMissingGames((prev) => !prev)}
-              style={{
-                textAlign: "left",
-                fontSize: "0.92rem",
-                paddingRight: "0.65rem",
-                paddingLeft: "0.65rem",
-              }}
-            >
+            <ButtonItem layout="below" bottomSeparator="none" onClick={() => setShowMissingGames((prev) => !prev)}>
               {showMissingGames ? "Hide games without music" : "Show games without music"}
-            </button>
+            </ButtonItem>
             {showMissingGames ? (
               <div
                 style={{
@@ -6913,22 +6882,16 @@ const Content = () => {
                   flexWrap: "nowrap",
                 }}
               >
-                <button
-                  className="DialogButton"
+                <DialogButton
                   style={{
                     width: "3rem",
+                    minWidth: 0,
                     height: "2.6rem",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                     padding: 0,
                   }}
-                  title={
-                    playback.appId === GLOBAL_AMBIENT_APP_ID &&
-                    playback.status === "playing"
-                      ? "Pause preview"
-                      : "Preview track"
-                  }
                   onClick={handleGlobalPreviewToggle}
                 >
                   {playback.appId === GLOBAL_AMBIENT_APP_ID &&
@@ -6937,22 +6900,21 @@ const Content = () => {
                   ) : (
                     <FaPlay />
                   )}
-                </button>
-                <button
-                  className="DialogButton"
+                </DialogButton>
+                <DialogButton
                   style={{
                     width: "3rem",
+                    minWidth: 0,
                     height: "2.6rem",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                     padding: 0,
                   }}
-                  title="Remove global ambient music"
                   onClick={handleRemoveGlobalTrack}
                 >
                   <FaTrash />
-                </button>
+                </DialogButton>
               </div>
               <div style={{ marginTop: "0.5rem" }}>
                 <SliderField
@@ -7012,22 +6974,16 @@ const Content = () => {
                   flexWrap: "nowrap",
                 }}
               >
-                <button
-                  className="DialogButton"
+                <DialogButton
                   style={{
                     width: "3rem",
+                    minWidth: 0,
                     height: "2.6rem",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                     padding: 0,
                   }}
-                  title={
-                    playback.appId === STORE_TRACK_APP_ID &&
-                    playback.status === "playing"
-                      ? "Pause preview"
-                      : "Preview track"
-                  }
                   onClick={handleStorePreviewToggle}
                 >
                   {playback.appId === STORE_TRACK_APP_ID &&
@@ -7036,22 +6992,21 @@ const Content = () => {
                   ) : (
                     <FaPlay />
                   )}
-                </button>
-                <button
-                  className="DialogButton"
+                </DialogButton>
+                <DialogButton
                   style={{
                     width: "3rem",
+                    minWidth: 0,
                     height: "2.6rem",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                     padding: 0,
                   }}
-                  title="Remove store-only music"
                   onClick={handleRemoveStoreTrack}
                 >
                   <FaTrash />
-                </button>
+                </DialogButton>
               </div>
               <div style={{ marginTop: "0.5rem" }}>
                 <SliderField
@@ -8443,21 +8398,19 @@ const ChangeGlobalTheme = () => {
               }}
             >
               {track ? (
-                <button
-                  className="DialogButton"
+                <DialogButton
                   onClick={handleRemove}
                   style={{ minWidth: "8.5rem", whiteSpace: "nowrap" }}
                 >
                   Remove music
-                </button>
+                </DialogButton>
               ) : null}
-              <button
-                className="DialogButton"
+              <DialogButton
                 onClick={() => Navigation.NavigateBack()}
                 style={{ minWidth: "6rem", whiteSpace: "nowrap" }}
               >
                 Done
-              </button>
+              </DialogButton>
             </div>
           </PanelSectionRow>
         </PanelSection>
@@ -8472,9 +8425,9 @@ const ChangeGlobalTheme = () => {
                 alignItems: "center",
               }}
             >
-              <button className="DialogButton" onClick={goUp}>
+              <DialogButton onClick={goUp}>
                 Up
-              </button>
+              </DialogButton>
               <div style={{ flexGrow: 1, fontFamily: "monospace" }}>
                 {currentDir}
               </div>
@@ -8501,9 +8454,9 @@ const ChangeGlobalTheme = () => {
               }}
               style={{ width: "100%", minWidth: "20rem" }}
             />
-              <button className="DialogButton" onClick={handleManualGo}>
+              <DialogButton onClick={handleManualGo}>
                 Go
-              </button>
+              </DialogButton>
             </div>
           </PanelSectionRow>
           <PanelSectionRow>
@@ -8520,14 +8473,13 @@ const ChangeGlobalTheme = () => {
                 }}
               >
                 {browser.dirs.map((dir) => (
-                  <button
+                  <DialogButton
                     key={`dir-${dir}`}
-                    className="DialogButton"
                     onClick={() => handleDirClick(dir)}
                     style={{ justifyContent: "flex-start" }}
                   >
                     📁 {dir}
-                  </button>
+                  </DialogButton>
                 ))}
                 {browser.files
                   .filter((file) =>
@@ -8536,14 +8488,13 @@ const ChangeGlobalTheme = () => {
                     )
                   )
                   .map((file) => (
-                    <button
+                    <DialogButton
                       key={`file-${file}`}
-                      className="DialogButton"
                       onClick={() => handleFileClick(file)}
                       style={{ justifyContent: "flex-start" }}
                     >
                       🎵 {file}
-                    </button>
+                    </DialogButton>
                   ))}
                 {!browser.dirs.length && !browser.files.length && (
                   <div style={{ opacity: 0.6 }}>Folder is empty.</div>
@@ -8714,21 +8665,19 @@ const ChangeStoreTheme = () => {
               }}
             >
               {track ? (
-                <button
-                  className="DialogButton"
+                <DialogButton
                   onClick={handleRemove}
                   style={{ minWidth: "8.5rem", whiteSpace: "nowrap" }}
                 >
                   Remove music
-                </button>
+                </DialogButton>
               ) : null}
-              <button
-                className="DialogButton"
+              <DialogButton
                 onClick={() => Navigation.NavigateBack()}
                 style={{ minWidth: "6rem", whiteSpace: "nowrap" }}
               >
                 Done
-              </button>
+              </DialogButton>
             </div>
           </PanelSectionRow>
         </PanelSection>
@@ -8743,9 +8692,9 @@ const ChangeStoreTheme = () => {
                 alignItems: "center",
               }}
             >
-              <button className="DialogButton" onClick={goUp}>
+              <DialogButton onClick={goUp}>
                 Up
-              </button>
+              </DialogButton>
               <div style={{ flexGrow: 1, fontFamily: "monospace" }}>
                 {currentDir}
               </div>
@@ -8772,9 +8721,9 @@ const ChangeStoreTheme = () => {
               }}
               style={{ width: "100%", minWidth: "20rem" }}
             />
-              <button className="DialogButton" onClick={handleManualGo}>
+              <DialogButton onClick={handleManualGo}>
                 Go
-              </button>
+              </DialogButton>
             </div>
           </PanelSectionRow>
           <PanelSectionRow>
@@ -8791,14 +8740,13 @@ const ChangeStoreTheme = () => {
                 }}
               >
                 {browser.dirs.map((dir) => (
-                  <button
+                  <DialogButton
                     key={`dir-${dir}`}
-                    className="DialogButton"
                     onClick={() => handleDirClick(dir)}
                     style={{ justifyContent: "flex-start" }}
                   >
                     📁 {dir}
-                  </button>
+                  </DialogButton>
                 ))}
                 {browser.files
                   .filter((file) =>
@@ -8807,14 +8755,13 @@ const ChangeStoreTheme = () => {
                     )
                   )
                   .map((file) => (
-                    <button
+                    <DialogButton
                       key={`file-${file}`}
-                      className="DialogButton"
                       onClick={() => handleFileClick(file)}
                       style={{ justifyContent: "flex-start" }}
                     >
                       🎵 {file}
-                    </button>
+                    </DialogButton>
                   ))}
                 {!browser.dirs.length && !browser.files.length && (
                   <div style={{ opacity: 0.6 }}>Folder is empty.</div>
